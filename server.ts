@@ -4,13 +4,22 @@ import express from "express";
 import { GoogleGenAI } from "@google/genai";
 
 const app = express();
-const port = 3001;
+const port = Number(process.env.PORT) || 3001;
 
 app.use(express.json({ limit: "1mb" }));
 
-// Cho phép giao diện Vite gọi API ở cổng 5173
+// Cho phép frontend local và website đã triển khai gọi API.
 app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "http://localhost:5173");
+  const origin = req.headers.origin;
+  const allowedOrigin =
+    origin === "http://localhost:5173" ||
+    (process.env.FRONTEND_URL && origin === process.env.FRONTEND_URL);
+
+  if (allowedOrigin && origin) {
+    res.header("Access-Control-Allow-Origin", origin);
+  }
+
+  res.header("Vary", "Origin");
   res.header("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
   res.header("Access-Control-Allow-Headers", "Content-Type");
 
@@ -32,7 +41,7 @@ app.get("/api/health", (_req, res) => {
 app.post("/api/chat", async (req, res) => {
   if (!ai) {
     res.status(500).json({
-      error: "Chưa tìm thấy GEMINI_API_KEY trong file .env."
+      error: "Chưa tìm thấy GEMINI_API_KEY trong biến môi trường."
     });
     return;
   }
@@ -44,7 +53,7 @@ app.post("/api/chat", async (req, res) => {
     return;
   }
 
-  const contents = messages
+  const history = messages
     .filter(
       (message: { role?: string; content?: string }) =>
         (message.role === "user" || message.role === "assistant") &&
@@ -52,59 +61,47 @@ app.post("/api/chat", async (req, res) => {
         message.content.trim().length > 0
     )
     .slice(-20)
-    .map((message: { role: string; content: string }) => ({
-      role: message.role === "assistant" ? "model" : "user",
-      parts: [{ text: message.content.slice(0, 12000) }]
-    }));
+    .map(
+      (message: { role: string; content: string }) =>
+        `${message.role === "assistant" ? "Trợ lý" : "Người dùng"}: ${message.content.slice(0, 12000)}`
+    )
+    .join("\n");
 
-  if (contents.length === 0) {
+  if (!history.trim()) {
     res.status(400).json({ error: "Không tìm thấy nội dung hợp lệ." });
     return;
   }
 
   try {
-    const history = messages
-  .slice(-20)
-  .map(
-    (message) =>
-      `${message.role === "assistant" ? "Trợ lý" : "Người dùng"}: ${message.content}`
-  )
-  .join("\n");
+    const response = await ai.interactions.create({
+      model: "gemini-3.1-flash-lite",
+      input:
+        "Bạn là trợ lý AI hữu ích. Hãy trả lời rõ ràng, chính xác bằng tiếng Việt khi người dùng hỏi bằng tiếng Việt. Nếu không chắc chắn, hãy nói rõ.\n\n" +
+        history
+    });
 
-const response = await ai.interactions.create({
-  model: "gemini-3.1-flash-lite",
-  input:
-    "Bạn là trợ lý AI hữu ích. Hãy trả lời rõ ràng, chính xác bằng tiếng Việt khi người dùng hỏi bằng tiếng Việt. Nếu không chắc chắn, hãy nói rõ.\n\n" +
-    history,
-});
-
-      
-
-   const answer = response.output_text?.trim();
+    const answer = response.output_text?.trim();
 
     if (!answer) {
-      res.status(502).json({ error: "AI chưa trả về nội dung. Vui lòng thử lại." });
+      res.status(502).json({
+        error: "AI chưa trả về nội dung. Vui lòng thử lại."
+      });
       return;
     }
 
     res.json({ answer });
-  }  catch (error: unknown) {
-  console.error("Gemini API error:", error);
+  } catch (error: unknown) {
+    console.error("Gemini API error:", error);
 
-  if (error instanceof Error) {
-    console.error("Error name:", error.name);
-    console.error("Error message:", error.message);
+    res.status(502).json({
+      error:
+        error instanceof Error
+          ? error.message
+          : "Lỗi không xác định khi gọi Gemini API."
+    });
   }
-
-  res.status(502).json({
-    error:
-      error instanceof Error
-        ? error.message
-        : "Lỗi không xác định khi gọi Gemini API.",
-  });
-}
 });
 
-app.listen(port, () => {
-  console.log(`Pythera API đang chạy tại http://localhost:${port}`);
+app.listen(port, "0.0.0.0", () => {
+  console.log(`Pythera API đang chạy tại cổng ${port}`);
 });
